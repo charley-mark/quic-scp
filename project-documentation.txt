@@ -1,0 +1,2 @@
+created a client , server (created the needed directories in them) and shared directory
+I created the generate_keys.go script in the shared directory

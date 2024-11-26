@@ -1,0 +1,28 @@
+# Ignore private keys and certificates
+*.pem
+*.key
+*.crt
+
+# Ignore binary files
+*.exe
+*.out
+*.o
+
+# Ignore Go module cache (optional)
+/vendor/
+
+# Ignore local Go test results
+*.test
+
+# Ignore editor-specific files (e.g., VS Code, etc.)
+.vscode/
+.idea/
+*.swp
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore storage directory
+server/storage/
+
