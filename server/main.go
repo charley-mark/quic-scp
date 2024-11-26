@@ -110,15 +110,21 @@ func handleUpload(stream quic.Stream, fileName string) {
 	}
 	defer file.Close()
 
-	fmt.Printf("Receiving file: %s\n", fileName)
-	written, err := io.Copy(file, stream)
+	fmt.Printf("Receiving file: %s\n", fileName) // Log that the server is receiving the file
+
+	written, err := io.Copy(file, stream) // Copy file content from the stream
 	if err != nil {
 		stream.Write([]byte(fmt.Sprintf("Error during upload: %v\n", err)))
 		return
 	}
+
+	// Log the number of bytes written
 	fmt.Printf("File %s uploaded successfully (%d bytes)\n", fileName, written)
+
+	// Send acknowledgment to the client
 	stream.Write([]byte("Upload successful\n"))
 }
+
 
 func handleDownload(stream quic.Stream, fileName string) {
 	filePath := filepath.Join(storageDir, fileName)
