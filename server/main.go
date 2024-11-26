@@ -60,12 +60,18 @@ func handleSession(session quic.Connection) {
 	for {
 		stream, err := session.AcceptStream(context.Background())
 		if err != nil {
-			log.Printf("Error accepting stream: %v", err)
+			// Suppress the error if the client intentionally closed the connection
+			if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+				return // Exit without logging
+			}
+			// Log unexpected errors
+			log.Printf("Unexpected error accepting stream: %v", err)
 			return
 		}
 		go handleStream(stream)
 	}
 }
+
 
 func handleStream(stream quic.Stream) {
 	defer stream.Close()
