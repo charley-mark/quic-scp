@@ -78,7 +78,12 @@ func handleStream(stream quic.Stream) {
 	reader := bufio.NewReader(stream)
 	command, err := reader.ReadString('\n')
 	if err != nil {
-		log.Printf("Failed to read from stream: %v", err)
+		// Suppress "Client closed" error
+		if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+			fmt.Println("Stream closed by client.")
+			return
+		}
+		log.Printf("Unexpected error reading from stream: %v", err)
 		return
 	}
 	command = strings.TrimSpace(command)
