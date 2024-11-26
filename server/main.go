@@ -3,13 +3,21 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -20,6 +28,9 @@ func main() {
 	// Initialize storage directory
 	storageDir = filepath.Join(".", "storage")
 	os.MkdirAll(storageDir, os.ModePerm)
+
+	// Generate TLS certificates if not present
+	generateTLSCert()
 
 	// Start QUIC server
 	tlsConfig := generateTLSConfig()
@@ -126,4 +137,64 @@ func generateTLSConfig() *tls.Config {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
 	}
+}
+
+// generateTLSCert generates cert.pem and key.pem if they don't exist
+func generateTLSCert() {
+	// Check if certificates already exist
+	if _, err := os.Stat("cert.pem"); err == nil {
+		if _, err := os.Stat("key.pem"); err == nil {
+			log.Println("TLS certificates already exist. Skipping generation.")
+			return
+		}
+	}
+
+	// Generate private key
+	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		log.Fatalf("Failed to generate private key: %v", err)
+	}
+
+	// Create certificate template
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().Unix()),
+		Subject: pkix.Name{
+			Organization: []string{"QUIC SCP Server"},
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+		},
+		BasicConstraintsValid: true,
+	}
+
+	// Generate certificate
+	certBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		log.Fatalf("Failed to generate certificate: %v", err)
+	}
+
+	// Save certificate
+	certFile, err := os.Create("cert.pem")
+	if err != nil {
+		log.Fatalf("Failed to create cert.pem: %v", err)
+	}
+	defer certFile.Close()
+	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certBytes})
+
+	// Save private key
+	keyFile, err := os.Create("key.pem")
+	if err != nil {
+		log.Fatalf("Failed to create key.pem: %v", err)
+	}
+	defer keyFile.Close()
+	keyBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		log.Fatalf("Failed to marshal private key: %v", err)
+	}
+	pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	log.Println("TLS certificates generated successfully.")
 }
