@@ -15,170 +15,150 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+
 func main() {
-	/* secure QUIC connection to the server */
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
 	session, err := quic.DialAddr(context.Background(), "127.0.0.1:4242", tlsConfig, nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server: %v", err)
 	}
 	defer session.CloseWithError(0, "Client closed")
+
 	fmt.Println("Connected to the server!")
 
-	/* File operation */
+
+    /*
+	Parse and excute Command
+	*/
 	reader := bufio.NewReader(os.Stdin)
-	for {
-		fmt.Print("Enter command (upload <local> <remote> | download <remote> <local>): ")
-		commandLine, _ := reader.ReadString('\n')
-		commandLine = strings.TrimSpace(commandLine)
+	fmt.Print("Enter commandLine (e.g., 'ls', 'upd <file>', 'dwd <file>'): ")
+	commandLine, _ := reader.ReadString('\n')
+	commandLine = strings.TrimSpace(commandLine)
 
-		// Parse the command
-		commandParts := strings.Fields(commandLine)
-		if len(commandParts) != 3 {
-			fmt.Println("Invalid command. Usage: upload <source> <destination> | download <source> <destination>")
-			continue
-		}
-
-		command := commandParts[0]
-		source := commandParts[1]
-		destination := commandParts[2]
-
-		switch command {
-		case "upload":
-			uploadFile(session, source, destination)
-		case "download":
-			downloadFile(session, source, destination)
-		default:
-			fmt.Println("You can use either the 'upload' or 'download' command.")
-		}
+	if commandLine == "ls" {
+		listFiles(session)
+	} else if strings.HasPrefix(commandLine, "upd ") {
+		filePath := strings.TrimPrefix(commandLine, "upd ")
+		uploadFile(session, filePath)
+	} else if strings.HasPrefix(commandLine, "dwd ") {
+		filePath := strings.TrimPrefix(commandLine, "dwd ")
+		downloadFile(session, filePath)
+	} else {
+		fmt.Println("Unknown commandLine.")
 	}
 }
 
-func uploadFile(session quic.Connection, localPath, remotePath string) {
-    /* getting absolute path for local file */
-    localPath, err := filepath.Abs(localPath)
-    if err != nil {
-        log.Printf("error resolving local file: %v\n", err)
-        return
-    }
-
-    /* open the file */
-    file, err := os.Open(localPath)
-    if err != nil {
-        log.Printf("Error opening file for upload: %v\n", err)
-        return
-    }
-    defer file.Close()
-
-    fileInfo, _ := file.Stat()
-    fileSize := fileInfo.Size()
-
-    /* Open a quic stream */
-    stream, err := session.OpenStreamSync(context.Background())
-    if err != nil {
-        log.Fatalf("Failed to open QUIC stream: %v", err)
-    }
-    defer stream.Close()
-
-    /* sending the upload command and file size */
-    command := fmt.Sprintf("UPLOAD|%s|%d\n", remotePath, fileSize)
-    _, err = stream.Write([]byte(command))
-    if err != nil {
-        log.Printf("Error sending upload command: %v\n", err)
-        return
-    }
-
-    fmt.Printf("Uploading %s to %s (%d bytes)...\n", localPath, remotePath, fileSize)
-
-    // Set the stream deadline once at the beginning (it should be enough to apply a single deadline)
-    stream.SetDeadline(time.Now().Add(60 * time.Second)) 
-
-    buffer := make([]byte, 8192) // Buffer size set to 8KB
-    var written int64
-    startTime := time.Now()
-
-    // Loop through the file and write chunks to the QUIC stream
-    for {
-        n, err := file.Read(buffer)
-        if n > 0 {
-            _, writeErr := stream.Write(buffer[:n])
-            if writeErr != nil {
-                log.Printf("Error sending data: %v\n", writeErr)
-                return
-            }
-            written += int64(n)
-            printProgress(written, fileSize) // Print progress after each chunk
-        }
-
-        if err != nil {
-            if err == io.EOF {
-                break // All file data has been sent
-            }
-            log.Printf("Error during file read: %v\n", err)
-            return
-        }
-    }
-
-    // Print upload completion
-    fmt.Println("\nUpload completed successfully!")
-    fmt.Printf("Elapsed Time: %.2f seconds\n", time.Since(startTime).Seconds())
-}
-
-
-// Download a file from the server to the client
-func downloadFile(session quic.Connection, remotePath, localPath string) {
-	// Open a QUIC stream
-	stream, err := session.OpenStreamSync(context.Background())
+func uploadFile(session quic.Connection, fileName string) {
+	filePath := filepath.Abs(fileName)
+	file, err := os.Open(filePath)
 	if err != nil {
-		log.Fatalf("Failed to open QUIC stream: %v", err)
-	}
-	defer stream.Close()
-
-	// Send download command
-	stream.Write([]byte(fmt.Sprintf("DOWNLOAD %s\n", remotePath)))
-
-	// Receive file metadata (file size)
-	buffer := make([]byte, 4096)
-	n, err := stream.Read(buffer)
-	if err != nil {
-		log.Printf("Error receiving file metadata: %v\n", err)
-		return
-	}
-
-	var fileSize int64
-	if _, err := fmt.Sscanf(string(buffer[:n]), "SIZE:%d", &fileSize); err != nil {
-		log.Printf("Invalid metadata from server: %v\n", err)
-		return
-	}
-
-	// Resolve local path and create file
-	localPath, err = filepath.Abs(localPath)
-	if err != nil {
-		log.Printf("Error resolving local path: %v\n", err)
-		return
-	}
-
-	file, err := os.Create(localPath)
-	if err != nil {
-		log.Printf("Error creating local file: %v\n", err)
+		log.Printf("Error: Could not open file %s for upload: %v\n", fileName, err)
 		return
 	}
 	defer file.Close()
 
-	fmt.Printf("Downloading %s to %s (%d bytes)...\n", remotePath, localPath, fileSize)
+	// Get file size
+	fileInfo, _ := file.Stat()
+	fileSize := fileInfo.Size()
 
-	// Receive and write file data in chunks
-	var written int64
-	startTime := time.Now()
+	// Open a QUIC stream
+	stream, err := session.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to open stream: %v", err)
+	}
+
+	// Send upload commandLine
+	stream.Write([]byte("upd " + fileName + "\n"))
+
+	fmt.Printf("Uploading file %s (%d bytes)...\n", fileName, fileSize)
+
+	// Metrics tracking
+	buffer := make([]byte, 1024) // 1 KB chunks
+	var written int64            // Bytes written
+	packetCount := 0             // Packet counter
+	startTime := time.Now()      // Track start time
+
 	for {
-		n, err := stream.Read(buffer)
+		n, err := file.Read(buffer)
 		if n > 0 {
-			_, writeErr := file.Write(buffer[:n])
+			_, writeErr := stream.Write(buffer[:n])
 			if writeErr != nil {
-				log.Printf("Error writing to local file: %v\n", writeErr)
+				log.Printf("Error sending packet: %v\n", writeErr)
 				return
 			}
 			written += int64(n)
+			packetCount++
+
+			// Display progress
+			printProgress(written, fileSize)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Printf("Error during upload: %v\n", err)
+			return
+		}
+	}
+
+	// Send packet count to the server
+	stream.Write([]byte(fmt.Sprintf("PACKETS:%d\n", packetCount)))
+
+	// Close the stream gracefully
+	stream.Close()
+
+	// Metrics reporting
+	elapsed := time.Since(startTime)
+	fmt.Printf("\nUpload completed successfully!\n")
+	fmt.Printf("File: %s\n", fileName)
+	fmt.Printf("Total Size: %d bytes\n", fileSize)
+	fmt.Printf("Elapsed Time: %.2f seconds\n", elapsed.Seconds())
+	fmt.Printf("Total Packets Sent: %d\n", packetCount)
+	fmt.Printf("Average Throughput: %.2f KB/s\n", float64(written)/elapsed.Seconds()/1024)
+}
+
+func printProgress(written, total int64) {
+	percentage := float64(written) / float64(total) * 100
+	fmt.Printf("\rProgress: [%-50s] %.2f%%", strings.Repeat("=", int(percentage/2)), percentage)
+}
+
+func downloadFile(session quic.Connection, fileName string) {
+	stream, err := session.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to open stream: %v", err)
+	}
+
+	stream.Write([]byte("dwd " + fileName + "\n"))
+
+	filePath := filepath.Join(".", fileName)
+	file, err := os.Create(filePath)
+	if err != nil {
+		log.Printf("Error: Could not create file %s for download: %v\n", fileName, err)
+		return
+	}
+	defer file.Close()
+
+	fmt.Printf("Downloading file %s...\n", fileName)
+
+	// Read file size from the stream (server should send size first)
+	buffer := make([]byte, 1024)
+	n, err := stream.Read(buffer)
+	if err != nil {
+		log.Printf("Error reading file size: %v\n", err)
+		return
+	}
+	fileSize := int64(0)
+	fmt.Sscanf(string(buffer[:n]), "SIZE:%d", &fileSize)
+
+	// Download file in chunks with progress
+	var written int64
+	for {
+		n, err := stream.Read(buffer)
+		if n > 0 {
+			file.Write(buffer[:n])
+			written += int64(n)
+
+			// Display progress
 			printProgress(written, fileSize)
 		}
 		if err != nil {
@@ -189,12 +169,22 @@ func downloadFile(session quic.Connection, remotePath, localPath string) {
 			return
 		}
 	}
-	fmt.Println("\nDownload completed successfully!")
-	fmt.Printf("Elapsed Time: %.2f seconds\n", time.Since(startTime).Seconds())
+	fmt.Printf("\nDownload completed successfully!\n")
 }
 
-// Display progress as a percentage
-func printProgress(written, total int64) {
-	percentage := float64(written) / float64(total) * 100
-	fmt.Printf("\rProgress: [%-50s] %.2f%%", strings.Repeat("=", int(percentage/2)), percentage)
+func listFiles(session quic.Connection) {
+	stream, err := session.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to open stream: %v", err)
+	}
+
+	stream.Write([]byte("ls\n"))
+
+	buf := make([]byte, 1024)
+	n, err := stream.Read(buf)
+	if err != nil && err != io.EOF {
+		log.Printf("Error reading response: %v", err)
+	}
+	fmt.Printf("Server response:\n%s\n", string(buf[:n]))
 }
+
