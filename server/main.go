@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"strconv"
 
 	"github.com/quic-go/quic-go"
 )
@@ -53,97 +54,173 @@ func main() {
 	}
 }
 
+// handleSession - accepts client connections and processes streams
 func handleSession(session quic.Connection) {
-	fmt.Println("Client connected")
-	defer session.CloseWithError(0, "Session closed")
+    fmt.Println("Client connected")
+    defer session.CloseWithError(0, "Session closed")
 
-	for {
-		stream, err := session.AcceptStream(context.Background())
-		if err != nil {
-			// Suppress the error if the client intentionally closed the connection
-			if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
-				return // Exit without logging
-			}
-			// Log unexpected errors
-			log.Printf("Unexpected error accepting stream: %v", err)
-			return
-		}
-		go handleStream(stream)
-	}
+    for {
+        stream, err := session.AcceptStream(context.Background())
+        if err != nil {
+            // Suppress the error if the client intentionally closed the connection
+            if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+                return // Exit without logging
+            }
+            // Log unexpected errors
+            log.Printf("Unexpected error accepting stream: %v", err)
+            return
+        }
+        go handleStream(stream)
+    }
 }
-
 
 func handleStream(stream quic.Stream) {
-	defer stream.Close()
-	reader := bufio.NewReader(stream)
-	command, err := reader.ReadString('\n')
-	if err != nil {
-		// Suppress "Client closed" error
-		if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
-			fmt.Println("Stream closed by client.")
-			return
-		}
-		log.Printf("Unexpected error reading from stream: %v", err)
-		return
-	}
-	command = strings.TrimSpace(command)
-	fmt.Printf("Received command: %s\n", command)
+    defer stream.Close()
 
-	switch {
-	case strings.HasPrefix(command, "upd "):
-		fileName := strings.TrimPrefix(command, "upd ")
-		handleUpload(stream, fileName)
-	case strings.HasPrefix(command, "dwd "):
-		fileName := strings.TrimPrefix(command, "dwd ")
-		handleDownload(stream, fileName)
-	default:
-		stream.Write([]byte("Unknown command\n"))
-	}
-}
+    reader := bufio.NewReader(stream)
+    command, err := reader.ReadString('\n')
+    if err != nil {
+        if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+            fmt.Println("Stream closed by client.")
+            return
+        }
+        log.Printf("Unexpected error reading from stream: %v", err)
+        return
+    }
+    command = strings.TrimSpace(command)
+    fmt.Printf("Received command: %s\n", command)
 
-func handleUpload(stream quic.Stream, fileName string) {
-	filePath := filepath.Join(storageDir, fileName)
-	file, err := os.Create(filePath)
-	if err != nil {
-		stream.Write([]byte(fmt.Sprintf("Error: Could not create file: %v\n", err)))
-		return
-	}
-	defer file.Close()
-
-	fmt.Printf("Receiving file: %s\n", fileName) // Log that the server is receiving the file
-
-	written, err := io.Copy(file, stream) // Copy file content from the stream
-	if err != nil {
-		stream.Write([]byte(fmt.Sprintf("Error during upload: %v\n", err)))
-		return
-	}
-
-	// Log the number of bytes written
-	fmt.Printf("File %s uploaded successfully (%d bytes)\n", fileName, written)
-
-	// Send acknowledgment to the client
-	stream.Write([]byte("Upload successful\n"))
+    // Process the command with error handling
+    if err := processCommand(stream, command); err != nil {
+        log.Printf("Error processing command: %v\n", err)
+        stream.Write([]byte(fmt.Sprintf("Error: %v\n", err)))
+    }
 }
 
 
-func handleDownload(stream quic.Stream, fileName string) {
-	filePath := filepath.Join(storageDir, fileName)
-	file, err := os.Open(filePath)
-	if err != nil {
-		stream.Write([]byte(fmt.Sprintf("Error: Could not open file: %v\n", err)))
-		return
-	}
-	defer file.Close()
+// Process the command properly in handleStream
+func processCommand(stream quic.Stream, command string) error {
+    // Check if the command is for uploading
+    if strings.HasPrefix(command, "UPLOAD|") {
+        // Split the command using "|" as a delimiter
+        parts := strings.Split(command, "|")
+        if len(parts) != 3 {
+            return fmt.Errorf("Invalid upload command: %s", command)
+        }
 
-	fileInfo, _ := file.Stat()
-	fmt.Printf("Sending file: %s (%d bytes)\n", fileName, fileInfo.Size())
-	written, err := io.Copy(stream, file)
-	if err != nil {
-		log.Printf("Error during file download: %v", err)
-		return
-	}
-	fmt.Printf("File %s sent successfully (%d bytes)\n", fileName, written)
+        // Extract the remote path and file size
+        remoteFilePath := parts[1] // Destination path on the server
+        fileSizeStr := parts[2]    // File size sent by the client as string
+        fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
+        if err != nil || fileSize <= 0 {
+            return fmt.Errorf("Invalid file size in command: %s", fileSizeStr)
+        }
+
+        fmt.Printf("Preparing to receive file for upload to %s (%d bytes)\n", remoteFilePath, fileSize)
+
+        // Call handleUpload function with stream and the parsed details
+        err = handleUpload(stream, remoteFilePath, fileSize)
+        if err != nil {
+            return fmt.Errorf("Error handling upload: %v", err)
+        }
+    } else {
+        // Handle unknown commands
+        stream.Write([]byte("Error: Unknown command\n"))
+        return fmt.Errorf("Unknown command: %s", command)
+    }
+    return nil
 }
+
+func handleUpload(stream quic.Stream, remoteFilePath string, fileSize int64) error {
+    // Ensure the remote file directory exists
+    dir := filepath.Dir(remoteFilePath)
+    if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+        return fmt.Errorf("Failed to create directories for %s: %v", remoteFilePath, err)
+    }
+
+    // Create the file at the specified remote path
+    file, err := os.Create(remoteFilePath)
+    if err != nil {
+        return fmt.Errorf("Failed to create file %s: %v", remoteFilePath, err)
+    }
+    defer file.Close()
+
+    fmt.Printf("Receiving file data for %s...\n", remoteFilePath)
+
+    buffer := make([]byte, 8192) // 8KB buffer
+    var received int64
+
+    // Read the data from the stream
+    for {
+        n, err := stream.Read(buffer)
+        if n > 0 {
+            _, writeErr := file.Write(buffer[:n])
+            if writeErr != nil {
+                return fmt.Errorf("Error writing to file %s: %v", remoteFilePath, writeErr)
+            }
+            received += int64(n)
+            printProgress(received, fileSize) // Print progress
+        }
+
+        if err != nil {
+            if err == io.EOF {
+                break // End of file transmission
+            }
+            return fmt.Errorf("Error reading from stream: %v", err)
+        }
+    }
+
+    fmt.Printf("\nUpload complete: %s (%d bytes)\n", remoteFilePath, received)
+    return nil
+}
+
+
+func printProgress(received, total int64) {
+    percentage := float64(received) / float64(total) * 100
+    fmt.Printf("\rProgress: [%-50s] %.2f%%", strings.Repeat("=", int(percentage/2)), percentage)
+}
+
+
+// handleDownload - handles file download from server to client
+func handleDownload(stream quic.Stream, filePath string) {
+    // Open the file on the server
+    remoteFile, err := os.Open(filePath)
+    if err != nil {
+        stream.Write([]byte(fmt.Sprintf("Error: Could not open remote file at %s: %v\n", filePath, err)))
+        return
+    }
+    defer remoteFile.Close()
+
+    fmt.Printf("Sending file: %s\n", filePath)
+
+    buffer := make([]byte, 8192)
+    var packetCount int
+
+    // Read from the file and write it to the stream (send to the client)
+    for {
+        n, err := remoteFile.Read(buffer)
+        if n > 0 {
+            _, writeErr := stream.Write(buffer[:n])
+            if writeErr != nil {
+                log.Printf("Error sending file data: %v", writeErr)
+                stream.Write([]byte("Error sending file data\n"))
+                return
+            }
+            packetCount++
+        }
+
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            log.Printf("Error reading file: %v\n", err)
+            return
+        }
+    }
+
+    fmt.Printf("\nFile download completed. Total packets: %d\n", packetCount)
+}
+
 
 func generateTLSConfig() *tls.Config {
 	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
