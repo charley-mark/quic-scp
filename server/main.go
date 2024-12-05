@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"strconv"
 
 	"github.com/quic-go/quic-go"
 )
@@ -54,171 +53,162 @@ func main() {
 	}
 }
 
-// handleSession - accepts client connections and processes streams
 func handleSession(session quic.Connection) {
-    fmt.Println("Client connected")
-    defer session.CloseWithError(0, "Session closed")
+	fmt.Println("Client connected")
+	defer session.CloseWithError(0, "Session closed")
 
-    for {
-        stream, err := session.AcceptStream(context.Background())
-        if err != nil {
-            // Suppress the error if the client intentionally closed the connection
-            if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
-                return // Exit without logging
-            }
-            // Log unexpected errors
-            log.Printf("Unexpected error accepting stream: %v", err)
-            return
-        }
-        go handleStream(stream)
-    }
+	for {
+		stream, err := session.AcceptStream(context.Background())
+		if err != nil {
+			// Suppress the error if the client intentionally closed the connection
+			if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+				return // Exit without logging
+			}
+			// Log unexpected errors
+			log.Printf("Unexpected error accepting stream: %v", err)
+			return
+		}
+		go handleStream(stream)
+	}
 }
+
 
 func handleStream(stream quic.Stream) {
-    defer stream.Close()
+	defer stream.Close()
+	reader := bufio.NewReader(stream)
+	command, err := reader.ReadString('\n')
+	if err != nil {
+		if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
+			fmt.Println("Stream closed by client.")
+			return
+		}
+		log.Printf("Unexpected error reading from stream: %v", err)
+		return
+	}
+	command = strings.TrimSpace(command)
+	fmt.Printf("Received command: %s\n", command)
 
-    reader := bufio.NewReader(stream)
-    command, err := reader.ReadString('\n')
-    if err != nil {
-        if strings.Contains(err.Error(), "Application error 0x0 (remote): Client closed") {
-            fmt.Println("Stream closed by client.")
-            return
-        }
-        log.Printf("Unexpected error reading from stream: %v", err)
-        return
-    }
-    command = strings.TrimSpace(command)
-    fmt.Printf("Received command: %s\n", command)
-
-    // Process the command with error handling
-    if err := processCommand(stream, command); err != nil {
-        log.Printf("Error processing command: %v\n", err)
-        stream.Write([]byte(fmt.Sprintf("Error: %v\n", err)))
-    }
+	switch {
+	// case command == "ls":
+	// 	handleListFiles(stream)
+	case strings.HasPrefix(command, "upload "):
+		filePath := strings.TrimPrefix(command, "upload ")
+		handleUpload(stream, filePath)
+	case strings.HasPrefix(command, "download "):
+		filePath := strings.TrimPrefix(command, "download ")
+		handleDownload(stream, filePath)
+	default:
+		stream.Write([]byte("Unknown command\n"))
+	}
 }
 
 
-// Process the command properly in handleStream
-func processCommand(stream quic.Stream, command string) error {
-    // Check if the command is for uploading
-    if strings.HasPrefix(command, "UPLOAD|") {
-        // Split the command using "|" as a delimiter
-        parts := strings.Split(command, "|")
-        if len(parts) != 3 {
-            return fmt.Errorf("Invalid upload command: %s", command)
-        }
+func handleUpload(stream quic.Stream, fileName string) {
+	filePath := filepath.Join(storageDir, fileName)
+	file, err := os.Create(filePath)
+	if err != nil {
+		stream.Write([]byte(fmt.Sprintf("Error: Could not create file: %v\n", err)))
+		return
+	}
+	defer file.Close()
 
-        // Extract the remote path and file size
-        remoteFilePath := parts[1] // Destination path on the server
-        fileSizeStr := parts[2]    // File size sent by the client as string
-        fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
-        if err != nil || fileSize <= 0 {
-            return fmt.Errorf("Invalid file size in command: %s", fileSizeStr)
-        }
+	fmt.Printf("Receiving file: %s\n", fileName)
 
-        fmt.Printf("Preparing to receive file for upload to %s (%d bytes)\n", remoteFilePath, fileSize)
+	// Metrics tracking
+	buffer := make([]byte, 1024) // 1 KB chunks
+	var written int64            // Bytes written
+	packetCount := 0             // Packet counter
 
-        // Call handleUpload function with stream and the parsed details
-        err = handleUpload(stream, remoteFilePath, fileSize)
-        if err != nil {
-            return fmt.Errorf("Error handling upload: %v", err)
-        }
-    } else {
-        // Handle unknown commands
-        stream.Write([]byte("Error: Unknown command\n"))
-        return fmt.Errorf("Unknown command: %s", command)
-    }
-    return nil
-}
+	for {
+		n, err := stream.Read(buffer)
+		if n > 0 {
+			// Check if this is the "PACKETS:<count>" message
+			if strings.HasPrefix(string(buffer[:n]), "PACKETS:") {
+				// Extract packet count sent by the client
+				var clientPacketCount int
+				fmt.Sscanf(string(buffer[:n]), "PACKETS:%d", &clientPacketCount)
 
-func handleUpload(stream quic.Stream, remoteFilePath string, fileSize int64) error {
-    // Ensure the remote file directory exists
-    dir := filepath.Dir(remoteFilePath)
-    if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-        return fmt.Errorf("Failed to create directories for %s: %v", remoteFilePath, err)
-    }
+				// Log sent and received packets
+				fmt.Printf("\nFile upload completed.\n")
+				fmt.Printf("Total Packets Sent by Client: %d\n", clientPacketCount)
+				fmt.Printf("Total Packets Received by Server: %d\n", packetCount)
+				if clientPacketCount != packetCount {
+					fmt.Printf("WARNING: Packet mismatch! Some packets may have been lost.\n")
+				}
+				break
+			}
 
-    // Create the file at the specified remote path
-    file, err := os.Create(remoteFilePath)
-    if err != nil {
-        return fmt.Errorf("Failed to create file %s: %v", remoteFilePath, err)
-    }
-    defer file.Close()
-
-    fmt.Printf("Receiving file data for %s...\n", remoteFilePath)
-
-    buffer := make([]byte, 8192) // 8KB buffer
-    var received int64
-
-    // Read the data from the stream
-    for {
-        n, err := stream.Read(buffer)
-        if n > 0 {
-            _, writeErr := file.Write(buffer[:n])
-            if writeErr != nil {
-                return fmt.Errorf("Error writing to file %s: %v", remoteFilePath, writeErr)
-            }
-            received += int64(n)
-            printProgress(received, fileSize) // Print progress
-        }
-
-        if err != nil {
-            if err == io.EOF {
-                break // End of file transmission
-            }
-            return fmt.Errorf("Error reading from stream: %v", err)
-        }
-    }
-
-    fmt.Printf("\nUpload complete: %s (%d bytes)\n", remoteFilePath, received)
-    return nil
+			// Write data to file
+			_, writeErr := file.Write(buffer[:n])
+			if writeErr != nil {
+				log.Printf("Error writing to file: %v\n", writeErr)
+				stream.Write([]byte("Error writing to file\n"))
+				return
+			}
+			written += int64(n)
+			packetCount++ // Increment packet count
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Printf("Error receiving packet: %v\n", err)
+			return
+		}
+	}
 }
 
 
-func printProgress(received, total int64) {
-    percentage := float64(received) / float64(total) * 100
-    fmt.Printf("\rProgress: [%-50s] %.2f%%", strings.Repeat("=", int(percentage/2)), percentage)
+func handleDownload(stream quic.Stream, fileName string) {
+	filePath := filepath.Join(storageDir, fileName)
+	file, err := os.Open(filePath)
+	if err != nil {
+		stream.Write([]byte(fmt.Sprintf("Error: Could not open file: %v\n", err)))
+		return
+	}
+	defer file.Close()
+
+	fileInfo, _ := file.Stat()
+	fileSize := fileInfo.Size()
+
+	// Send file size to the client
+	stream.Write([]byte(fmt.Sprintf("SIZE:%d\n", fileSize)))
+
+	fmt.Printf("Sending file: %s (%d bytes)\n", fileName, fileSize)
+
+	// Send file in chunks
+	buffer := make([]byte, 1024)
+	for {
+		n, err := file.Read(buffer)
+		if n > 0 {
+			stream.Write(buffer[:n])
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Printf("Error during file download: %v", err)
+			return
+		}
+	}
+	fmt.Printf("File %s sent successfully (%d bytes)\n", fileName, fileSize)
 }
 
 
-// handleDownload - handles file download from server to client
-func handleDownload(stream quic.Stream, filePath string) {
-    // Open the file on the server
-    remoteFile, err := os.Open(filePath)
-    if err != nil {
-        stream.Write([]byte(fmt.Sprintf("Error: Could not open remote file at %s: %v\n", filePath, err)))
-        return
-    }
-    defer remoteFile.Close()
 
-    fmt.Printf("Sending file: %s\n", filePath)
+func handleListFiles(stream quic.Stream) {
+	files, err := os.ReadDir(storageDir)
+	if err != nil {
+		stream.Write([]byte(fmt.Sprintf("Error reading directory: %v\n", err)))
+		return
+	}
 
-    buffer := make([]byte, 8192)
-    var packetCount int
-
-    // Read from the file and write it to the stream (send to the client)
-    for {
-        n, err := remoteFile.Read(buffer)
-        if n > 0 {
-            _, writeErr := stream.Write(buffer[:n])
-            if writeErr != nil {
-                log.Printf("Error sending file data: %v", writeErr)
-                stream.Write([]byte("Error sending file data\n"))
-                return
-            }
-            packetCount++
-        }
-
-        if err != nil {
-            if err == io.EOF {
-                break
-            }
-            log.Printf("Error reading file: %v\n", err)
-            return
-        }
-    }
-
-    fmt.Printf("\nFile download completed. Total packets: %d\n", packetCount)
+	var fileList []string
+	for _, file := range files {
+		fileList = append(fileList, file.Name())
+	}
+	stream.Write([]byte(strings.Join(fileList, "\n") + "\n"))
+	fmt.Println("Listed files in storage directory.")
 }
 
 
