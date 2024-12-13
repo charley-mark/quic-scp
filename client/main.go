@@ -15,9 +15,11 @@ import (
 
 )
 
+//132.235.1.17
 func main() {
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	session, err := quic.DialAddr(context.Background(), "127.0.0.1:4242", tlsConfig, nil)
+	//session, err := quic.DialAddr(context.Background(), "127.0.0.1:4242", tlsConfig, nil)
+	session, err := quic.DialAddr(context.Background(), "132.235.1.17:4242", tlsConfig, nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server: %v", err)
 	}
