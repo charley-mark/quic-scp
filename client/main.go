@@ -1,5 +1,4 @@
 package main
-
 import (
 	"bufio"
 	"context"
@@ -10,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
 	"github.com/quic-go/quic-go"
 
 )
@@ -59,14 +57,12 @@ func main() {
 	}
 }
 
-
 // Generate a progress bar for given percentage
 func generateProgressBar(percentage int) string {
 	completed := percentage / 10
 	remaining := 10 - completed
 	return fmt.Sprintf("[%s%s] %d%%", strings.Repeat("#", completed), strings.Repeat("-", remaining), percentage)
 }
-
 
 // Handle uploading multiple files
 func uploadFiles(session quic.Connection, fileNames []string) {
@@ -144,7 +140,7 @@ func downloadFiles(session quic.Connection, fileNames []string) {
     }
     defer stream.Close()
 
-    // Send a single `dwd` command with all file names
+    // Send a single dwd command with all file names
     command := "dwd " + strings.Join(fileNames, " ")
     stream.Write([]byte(command + "\n"))
 
@@ -154,7 +150,6 @@ func downloadFiles(session quic.Connection, fileNames []string) {
             filesDownloaded++
         }
     }
-
     fmt.Printf("Downloaded %d/%d successfully.\n", filesDownloaded, totalFiles)
 }
 
