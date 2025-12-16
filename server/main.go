@@ -13,9 +13,11 @@ import (
 )
 var storageDir string
 func main() {
+
 	// Initialize storage directory
 	storageDir = filepath.Join(".", "storage")
 	os.MkdirAll(storageDir, os.ModePerm)
+
 	// Start QUIC server
 	tlsConfig := generateTLSConfig()
 	addr := "0.0.0.0:4242"
@@ -24,6 +26,7 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 	fmt.Printf("Server listening on %s...\n", addr)
+
 	// Accept client connections
 	for {
 		session, err := listener.Accept(context.Background())
@@ -34,7 +37,8 @@ func main() {
 		go handleSession(session)
 	}
 }
-func handleSession(session quic.Connection) {
+
+func handleSession(session quic.Connection){
 	fmt.Println("Client connected")
 	defer session.CloseWithError(0, "Session closed")
 	for {
@@ -47,15 +51,16 @@ func handleSession(session quic.Connection) {
 	}
 }
 
-func handleStream(stream quic.Stream) {
+func handleStream(stream quic.Stream){
     defer stream.Close()
-
     reader := bufio.NewReader(stream)
     command, err := reader.ReadString('\n')
+
     if err != nil {
         log.Printf("Failed to read from stream: %v", err)
         return
     }
+
     command = strings.TrimSpace(command)
     fmt.Printf("Received command: %s\n", command)
 
@@ -83,7 +88,6 @@ func handleMultipleDownloads(stream quic.Stream, fileNames []string) {
             filesSent++
         }
     }
-
     fmt.Printf("Sent %d/%d successfully.\n", filesSent, totalFiles)
 }
 
@@ -103,10 +107,8 @@ func handleUpload(stream quic.Stream, fileName string) {
         log.Printf("Error during file upload: %v\n", err)
         return
     }
-
     fmt.Printf("Uploaded file %s (%d bytes) successfully\n", fileName, written)
 }
-
 
 func handleDownload(stream quic.Stream, fileName string) bool {
     filePath := filepath.Join(storageDir, fileName)
